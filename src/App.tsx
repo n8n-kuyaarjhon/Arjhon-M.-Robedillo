@@ -11,6 +11,7 @@ import { RequestView } from './components/RequestView';
 import { TrackView } from './components/TrackView';
 import {
   auth,
+  consumeRedirectSignIn,
   extractReadableError,
   getRememberLoginPref,
   listAllRequests,
@@ -123,6 +124,8 @@ export default function App() {
   // Listen to Firebase Auth state (one-time persistent login)
   useEffect(() => {
     let active = true;
+
+    void consumeRedirectSignIn();
 
     if (typeof auth.authStateReady === 'function') {
       void auth.authStateReady().then(() => {
