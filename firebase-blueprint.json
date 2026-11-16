@@ -1,0 +1,238 @@
+{
+  "entities": {
+    "AdminMarker": {
+      "title": "AdminMarker",
+      "description": "Explicit Registrar administrator marker keyed by Firebase Auth UID.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "maxLength": 200 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "createdAt"]
+    },
+    "UserPublic": {
+      "title": "UserPublic",
+      "description": "Non-sensitive user profile display information.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "role": { "type": "string", "enum": ["student", "registrar", "admin_assistant", "principal"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "role", "createdAt", "updatedAt"]
+    },
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "Isolated PII for a signed-in user (email, mobile number, LRN, strand, section, address).",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "format": "email", "maxLength": 200 },
+        "firstName": { "type": "string", "maxLength": 80 },
+        "middleName": { "type": "string", "maxLength": 80 },
+        "lastName": { "type": "string", "maxLength": 80 },
+        "phone": { "type": "string", "maxLength": 24 },
+        "lrn": { "type": "string", "maxLength": 12 },
+        "strand": { "type": "string", "maxLength": 32 },
+        "section": { "type": "string", "maxLength": 80 },
+        "yearGraduated": { "type": "string", "maxLength": 4 },
+        "address": { "type": "string", "maxLength": 250 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "updatedAt"]
+    },
+    "StudentRecord": {
+      "title": "StudentRecord",
+      "description": "Official learner record keyed by 12-digit LRN.",
+      "type": "object",
+      "properties": {
+        "lrn": { "type": "string", "minLength": 12, "maxLength": 12, "pattern": "^[0-9]{12}$" },
+        "firstName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "middleName": { "type": "string", "maxLength": 80 },
+        "lastName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "strand": { "type": "string", "maxLength": 32 },
+        "lastGradeLevel": { "type": "string", "maxLength": 4 },
+        "section": { "type": "string", "maxLength": 80 },
+        "yearGraduated": { "type": "string", "maxLength": 4 },
+        "email": { "type": "string", "maxLength": 200 },
+        "phone": { "type": "string", "maxLength": 24 },
+        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["lrn", "firstName", "lastName", "createdByUid", "createdAt", "updatedAt"]
+    },
+    "StaffMember": {
+      "title": "StaffMember",
+      "description": "Authorized school staff account managed by the Registrar.",
+      "type": "object",
+      "properties": {
+        "staffId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "role": { "type": "string", "enum": ["registrar", "admin_assistant", "principal"] },
+        "phone": { "type": "string", "maxLength": 24 },
+        "email": { "type": "string", "format": "email", "maxLength": 200 },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["staffId", "name", "role", "email", "active", "createdAt", "updatedAt"]
+    },
+    "StaffRoleBinding": {
+      "title": "StaffRoleBinding",
+      "description": "Verified mapping from Firebase Auth UID to an active StaffMember document.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "staffId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "role": { "type": "string", "enum": ["registrar", "admin_assistant", "principal"] },
+        "email": { "type": "string", "format": "email", "maxLength": 200 },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "staffId", "role", "email", "active", "createdAt"]
+    },
+    "ClearanceRequest": {
+      "title": "ClearanceRequest",
+      "description": "Full clearance document request submitted by a learner.",
+      "type": "object",
+      "properties": {
+        "requestId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "tracking": { "type": "string", "minLength": 14, "maxLength": 14, "pattern": "^CSHS-[A-Z0-9]{4}-[A-Z0-9]{4}$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "doc": { "type": "string", "enum": ["form137_sf10", "good_moral", "clearance", "report_card"] },
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "lrn": { "type": "string", "maxLength": 12 },
+        "section": { "type": "string", "maxLength": 120 },
+        "phone": { "type": "string", "maxLength": 24 },
+        "email": { "type": "string", "format": "email", "maxLength": 200 },
+        "purpose": { "type": "string", "enum": ["employment", "university", "military", "others"] },
+        "purposeOther": { "type": "string", "maxLength": 200 },
+        "employment": { "type": "string", "maxLength": 16 },
+        "idType": { "type": "string", "maxLength": 80 },
+        "university": { "type": "string", "maxLength": 160 },
+        "claimerType": { "type": "string", "enum": ["self", "rep"] },
+        "repName": { "type": "string", "maxLength": 120 },
+        "relationship": { "type": "string", "maxLength": 60 },
+        "repPhone": { "type": "string", "maxLength": 24 },
+        "repIdType": { "type": "string", "maxLength": 80 },
+        "repReason": { "type": "string", "maxLength": 200 },
+        "signedName": { "type": "string", "maxLength": 120 },
+        "signedAt": { "type": "string", "maxLength": 40 },
+        "idFileUrl": { "type": "string", "maxLength": 300 },
+        "idFileMime": { "type": "string", "maxLength": 80 },
+        "proofFileUrl": { "type": "string", "maxLength": 300 },
+        "proofFileMime": { "type": "string", "maxLength": 80 },
+        "photoFileUrl": { "type": "string", "maxLength": 300 },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "release": { "type": "string", "enum": ["", "preparing", "ready", "claimed"] },
+        "reason": { "type": "string", "maxLength": 300 },
+        "authCheck": { "type": "string", "enum": ["", "correct", "not_found"] },
+        "idVerified": { "type": "boolean" },
+        "complete": { "type": "boolean" },
+        "claimedBy": { "type": "string", "maxLength": 160 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "approvedAt": { "type": "string", "maxLength": 40 },
+        "rejectedAt": { "type": "string", "maxLength": 40 },
+        "readyAt": { "type": "string", "maxLength": 40 },
+        "claimedAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": [
+        "requestId",
+        "tracking",
+        "ownerUid",
+        "doc",
+        "name",
+        "email",
+        "purpose",
+        "claimerType",
+        "status",
+        "release",
+        "authCheck",
+        "idVerified",
+        "complete",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PublicTrackingStatus": {
+      "title": "PublicTrackingStatus",
+      "description": "Non-PII status projection keyed by tracking number for public tracking lookups.",
+      "type": "object",
+      "properties": {
+        "tracking": { "type": "string", "minLength": 14, "maxLength": 14, "pattern": "^CSHS-[A-Z0-9]{4}-[A-Z0-9]{4}$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "doc": { "type": "string", "enum": ["form137_sf10", "good_moral", "clearance", "report_card"] },
+        "purpose": { "type": "string", "enum": ["employment", "university", "military", "others"] },
+        "claimerType": { "type": "string", "enum": ["self", "rep"] },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "release": { "type": "string", "enum": ["", "preparing", "ready", "claimed"] },
+        "reason": { "type": "string", "maxLength": 300 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "approvedAt": { "type": "string", "maxLength": 40 },
+        "rejectedAt": { "type": "string", "maxLength": 40 },
+        "readyAt": { "type": "string", "maxLength": 40 },
+        "claimedAt": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["tracking", "ownerUid", "doc", "purpose", "claimerType", "status", "release", "createdAt", "updatedAt"]
+    },
+    "StaffNotification": {
+      "title": "StaffNotification",
+      "description": "Inbox notification item for staff members.",
+      "type": "object",
+      "properties": {
+        "notificationId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "recipientEmail": { "type": "string", "format": "email", "maxLength": 200 },
+        "message": { "type": "string", "minLength": 1, "maxLength": 400 },
+        "via": { "type": "string", "maxLength": 40 },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["notificationId", "recipientEmail", "message", "via", "read", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/admins/{userId}": {
+      "schema": { "$ref": "#/entities/AdminMarker" },
+      "description": "Registrar administrator markers."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserPublic" },
+      "description": "Non-sensitive user profile documents."
+    },
+    "/users/{userId}/private/info": {
+      "schema": { "$ref": "#/entities/UserPrivateInfo" },
+      "description": "Isolated user PII (email, phone, LRN, address)."
+    },
+    "/students/{lrn}": {
+      "schema": { "$ref": "#/entities/StudentRecord" },
+      "description": "Official learner records keyed by 12-digit LRN."
+    },
+    "/staff/{staffId}": {
+      "schema": { "$ref": "#/entities/StaffMember" },
+      "description": "Authorized staff directory managed by the Registrar."
+    },
+    "/staff_roles/{userId}": {
+      "schema": { "$ref": "#/entities/StaffRoleBinding" },
+      "description": "UID-to-staff verification bindings."
+    },
+    "/requests/{requestId}": {
+      "schema": { "$ref": "#/entities/ClearanceRequest" },
+      "description": "Document clearance requests and uploaded file references."
+    },
+    "/requests_public/{tracking}": {
+      "schema": { "$ref": "#/entities/PublicTrackingStatus" },
+      "description": "Public non-PII status tracking lookup keyed by CSHS tracking number."
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/StaffNotification" },
+      "description": "Staff activity notifications."
+    }
+  }
+}

@@ -1,0 +1,447 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Global Primitives & Helpers
+    // -------------------------------------------------------------------------
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidLrn(lrn) {
+      return lrn is string && lrn.size() == 12 && lrn.matches('^[0-9]{12}$');
+    }
+
+    function isValidTracking(tracking) {
+      return tracking is string && tracking.size() == 14 && tracking.matches('^CSHS-[A-Z0-9]{4}-[A-Z0-9]{4}$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isVerified() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isVerified() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email.lower() == 'romandidter@gmail.com'
+      );
+    }
+
+    function hasActiveStaffRole() {
+      return isVerified() &&
+        exists(/databases/$(database)/documents/staff_roles/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/staff_roles/$(request.auth.uid)).data.active == true &&
+        get(/databases/$(database)/documents/staff/$(get(/databases/$(database)/documents/staff_roles/$(request.auth.uid)).data.staffId)).data.active == true;
+    }
+
+    function isStaff() {
+      return isAdmin() || hasActiveStaffRole();
+    }
+
+    function isFulfiller() {
+      return isAdmin() || (
+        hasActiveStaffRole() &&
+        get(/databases/$(database)/documents/staff/$(get(/databases/$(database)/documents/staff_roles/$(request.auth.uid)).data.staffId)).data.role in ['registrar', 'admin_assistant']
+      );
+    }
+
+    // -------------------------------------------------------------------------
+    // Validation Blueprints
+    // -------------------------------------------------------------------------
+    function isValidAdminMarker(data) {
+      return data.keys().hasAll(['uid', 'email', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'createdAt']) &&
+        isValidId(data.uid) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 200 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidUserPublic(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'role', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'displayName', 'role', 'createdAt', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
+        data.role in ['student', 'registrar', 'admin_assistant', 'principal'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidUserPrivateInfo(data) {
+      return data.keys().hasAll(['uid', 'email', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'firstName', 'middleName', 'lastName', 'phone', 'lrn', 'strand', 'section', 'yearGraduated', 'address', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 200 &&
+        (!('firstName' in data) || (data.firstName is string && data.firstName.size() <= 80)) &&
+        (!('middleName' in data) || (data.middleName is string && data.middleName.size() <= 80)) &&
+        (!('lastName' in data) || (data.lastName is string && data.lastName.size() <= 80)) &&
+        (!('phone' in data) || (data.phone is string && data.phone.size() <= 24)) &&
+        (!('lrn' in data) || (data.lrn is string && data.lrn.size() <= 12)) &&
+        (!('strand' in data) || (data.strand is string && data.strand.size() <= 32)) &&
+        (!('section' in data) || (data.section is string && data.section.size() <= 80)) &&
+        (!('yearGraduated' in data) || (data.yearGraduated is string && data.yearGraduated.size() <= 4)) &&
+        (!('address' in data) || (data.address is string && data.address.size() <= 250)) &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidStudent(data) {
+      return data.keys().hasAll(['lrn', 'firstName', 'lastName', 'createdByUid', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['lrn', 'firstName', 'middleName', 'lastName', 'strand', 'lastGradeLevel', 'section', 'yearGraduated', 'email', 'phone', 'createdByUid', 'createdAt', 'updatedAt']) &&
+        isValidLrn(data.lrn) &&
+        data.firstName is string && data.firstName.size() >= 1 && data.firstName.size() <= 80 &&
+        data.lastName is string && data.lastName.size() >= 1 && data.lastName.size() <= 80 &&
+        (!('middleName' in data) || (data.middleName is string && data.middleName.size() <= 80)) &&
+        (!('strand' in data) || (data.strand is string && data.strand.size() <= 32)) &&
+        (!('lastGradeLevel' in data) || (data.lastGradeLevel is string && data.lastGradeLevel.size() <= 4)) &&
+        (!('section' in data) || (data.section is string && data.section.size() <= 80)) &&
+        (!('yearGraduated' in data) || (data.yearGraduated is string && data.yearGraduated.size() <= 4)) &&
+        (!('email' in data) || (data.email is string && data.email.size() <= 200)) &&
+        (!('phone' in data) || (data.phone is string && data.phone.size() <= 24)) &&
+        isValidId(data.createdByUid) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidStaff(data) {
+      return data.keys().hasAll(['staffId', 'name', 'role', 'email', 'active', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['staffId', 'name', 'role', 'phone', 'email', 'active', 'createdAt', 'updatedAt']) &&
+        isValidId(data.staffId) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        data.role in ['registrar', 'admin_assistant', 'principal'] &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 200 &&
+        (!('phone' in data) || (data.phone is string && data.phone.size() <= 24)) &&
+        data.active is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidStaffRoleBinding(data) {
+      return data.keys().hasAll(['uid', 'staffId', 'role', 'email', 'active', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'staffId', 'role', 'email', 'active', 'createdAt']) &&
+        isValidId(data.uid) &&
+        isValidId(data.staffId) &&
+        data.role in ['registrar', 'admin_assistant', 'principal'] &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 200 &&
+        data.active is bool &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidRequest(data) {
+      return data.keys().hasAll([
+          'requestId', 'tracking', 'ownerUid', 'doc', 'name', 'email',
+          'purpose', 'claimerType', 'status', 'release', 'authCheck',
+          'idVerified', 'complete', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'requestId', 'tracking', 'ownerUid', 'doc', 'name', 'lrn', 'section',
+          'phone', 'email', 'purpose', 'purposeOther', 'employment', 'idType',
+          'university', 'claimerType', 'repName', 'relationship', 'repPhone',
+          'repIdType', 'repReason', 'signedName', 'signedAt', 'idFileUrl',
+          'idFileMime', 'proofFileUrl', 'proofFileMime', 'photoFileUrl',
+          'status', 'release', 'reason', 'authCheck', 'idVerified', 'complete',
+          'claimedBy', 'createdAt', 'updatedAt', 'approvedAt', 'rejectedAt',
+          'readyAt', 'claimedAt'
+        ]) &&
+        isValidId(data.requestId) &&
+        isValidTracking(data.tracking) &&
+        isValidId(data.ownerUid) &&
+        data.doc in ['form137_sf10', 'good_moral', 'clearance', 'report_card'] &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 160 &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 200 &&
+        data.purpose in ['employment', 'university', 'military', 'others'] &&
+        data.claimerType in ['self', 'rep'] &&
+        data.status in ['pending', 'approved', 'rejected'] &&
+        data.release in ['', 'preparing', 'ready', 'claimed'] &&
+        data.authCheck in ['', 'correct', 'not_found'] &&
+        data.idVerified is bool &&
+        data.complete is bool &&
+        (!('lrn' in data) || (data.lrn is string && data.lrn.size() <= 12)) &&
+        (!('section' in data) || (data.section is string && data.section.size() <= 120)) &&
+        (!('phone' in data) || (data.phone is string && data.phone.size() <= 24)) &&
+        (!('purposeOther' in data) || (data.purposeOther is string && data.purposeOther.size() <= 200)) &&
+        (!('employment' in data) || (data.employment is string && data.employment.size() <= 16)) &&
+        (!('idType' in data) || (data.idType is string && data.idType.size() <= 80)) &&
+        (!('university' in data) || (data.university is string && data.university.size() <= 160)) &&
+        (!('repName' in data) || (data.repName is string && data.repName.size() <= 120)) &&
+        (!('relationship' in data) || (data.relationship is string && data.relationship.size() <= 60)) &&
+        (!('repPhone' in data) || (data.repPhone is string && data.repPhone.size() <= 24)) &&
+        (!('repIdType' in data) || (data.repIdType is string && data.repIdType.size() <= 80)) &&
+        (!('repReason' in data) || (data.repReason is string && data.repReason.size() <= 200)) &&
+        (!('signedName' in data) || (data.signedName is string && data.signedName.size() <= 120)) &&
+        (!('signedAt' in data) || (data.signedAt is string && data.signedAt.size() <= 40)) &&
+        (!('idFileUrl' in data) || (data.idFileUrl is string && data.idFileUrl.size() <= 300)) &&
+        (!('idFileMime' in data) || (data.idFileMime is string && data.idFileMime.size() <= 80)) &&
+        (!('proofFileUrl' in data) || (data.proofFileUrl is string && data.proofFileUrl.size() <= 300)) &&
+        (!('proofFileMime' in data) || (data.proofFileMime is string && data.proofFileMime.size() <= 80)) &&
+        (!('photoFileUrl' in data) || (data.photoFileUrl is string && data.photoFileUrl.size() <= 300)) &&
+        (!('reason' in data) || (data.reason is string && data.reason.size() <= 300)) &&
+        (!('claimedBy' in data) || (data.claimedBy is string && data.claimedBy.size() <= 160)) &&
+        (!('approvedAt' in data) || (data.approvedAt is string && data.approvedAt.size() <= 40)) &&
+        (!('rejectedAt' in data) || (data.rejectedAt is string && data.rejectedAt.size() <= 40)) &&
+        (!('readyAt' in data) || (data.readyAt is string && data.readyAt.size() <= 40)) &&
+        (!('claimedAt' in data) || (data.claimedAt is string && data.claimedAt.size() <= 40)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPublicTracking(data) {
+      return data.keys().hasAll(['tracking', 'ownerUid', 'doc', 'purpose', 'claimerType', 'status', 'release', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['tracking', 'ownerUid', 'doc', 'purpose', 'claimerType', 'status', 'release', 'reason', 'createdAt', 'updatedAt', 'approvedAt', 'rejectedAt', 'readyAt', 'claimedAt']) &&
+        isValidTracking(data.tracking) &&
+        isValidId(data.ownerUid) &&
+        data.doc in ['form137_sf10', 'good_moral', 'clearance', 'report_card'] &&
+        data.purpose in ['employment', 'university', 'military', 'others'] &&
+        data.claimerType in ['self', 'rep'] &&
+        data.status in ['pending', 'approved', 'rejected'] &&
+        data.release in ['', 'preparing', 'ready', 'claimed'] &&
+        (!('reason' in data) || (data.reason is string && data.reason.size() <= 300)) &&
+        (!('approvedAt' in data) || (data.approvedAt is string && data.approvedAt.size() <= 40)) &&
+        (!('rejectedAt' in data) || (data.rejectedAt is string && data.rejectedAt.size() <= 40)) &&
+        (!('readyAt' in data) || (data.readyAt is string && data.readyAt.size() <= 40)) &&
+        (!('claimedAt' in data) || (data.claimedAt is string && data.claimedAt.size() <= 40)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll(['notificationId', 'recipientEmail', 'message', 'via', 'read', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['notificationId', 'recipientEmail', 'message', 'via', 'read', 'createdAt', 'updatedAt']) &&
+        isValidId(data.notificationId) &&
+        data.recipientEmail is string && data.recipientEmail.size() >= 3 && data.recipientEmail.size() <= 200 &&
+        data.message is string && data.message.size() >= 1 && data.message.size() <= 400 &&
+        data.via is string && data.via.size() >= 1 && data.via.size() <= 40 &&
+        data.read is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // -------------------------------------------------------------------------
+    // Collection Rules
+    // -------------------------------------------------------------------------
+
+    // Admins
+    match /admins/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isValidId(userId) && isAdmin() &&
+        isValidAdminMarker(incoming()) &&
+        incoming().uid == userId &&
+        incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if isValidId(userId) && isAdmin() && userId != request.auth.uid;
+    }
+
+    // Users & PII-Isolated Private Info
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isValidId(userId) && isOwner(userId) &&
+        isValidUserPublic(incoming()) &&
+        incoming().uid == userId &&
+        incoming().role == 'student' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(userId) &&
+        isValidUserPublic(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (isOwner(userId) && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'updatedAt']))
+        );
+      allow delete: if isValidId(userId) && isAdmin();
+
+      match /private/{docId} {
+        allow get: if isValidId(userId) && isValidId(docId) && docId == 'info' && (isOwner(userId) || isAdmin());
+        allow list: if false;
+        allow create: if isValidId(userId) && docId == 'info' && (isOwner(userId) || isAdmin()) &&
+          isValidUserPrivateInfo(incoming()) &&
+          incoming().uid == userId &&
+          incoming().updatedAt == request.time;
+        allow update: if isValidId(userId) && docId == 'info' && (isOwner(userId) || isAdmin()) &&
+          isValidUserPrivateInfo(incoming()) &&
+          incoming().uid == existing().uid &&
+          incoming().updatedAt == request.time;
+        allow delete: if isValidId(userId) && docId == 'info' && isAdmin();
+      }
+    }
+
+    // Official Learner / Student Records
+    match /students/{lrn} {
+      allow get: if isValidLrn(lrn) && (
+        isStaff() ||
+        (isVerified() && existing().email != null && existing().email.lower() == request.auth.token.email.lower())
+      );
+      allow list: if isStaff() || (isVerified() && resource.data.email == request.auth.token.email.lower());
+      allow create: if isValidLrn(lrn) && isFulfiller() &&
+        isValidStudent(incoming()) &&
+        incoming().lrn == lrn &&
+        incoming().createdByUid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidLrn(lrn) && isFulfiller() &&
+        isValidStudent(incoming()) &&
+        incoming().lrn == existing().lrn &&
+        incoming().createdByUid == existing().createdByUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time;
+      allow delete: if isValidLrn(lrn) && isAdmin();
+    }
+
+    // Authorized School Staff
+    match /staff/{staffId} {
+      allow get: if isValidId(staffId) && (
+        isAdmin() ||
+        (isVerified() && existing().email.lower() == request.auth.token.email.lower())
+      );
+      allow list: if isAdmin() || (isVerified() && resource.data.email == request.auth.token.email.lower());
+      allow create: if isValidId(staffId) && isAdmin() &&
+        isValidStaff(incoming()) &&
+        incoming().staffId == staffId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(staffId) && isAdmin() &&
+        isValidStaff(incoming()) &&
+        incoming().staffId == existing().staffId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time;
+      allow delete: if isValidId(staffId) && isAdmin();
+    }
+
+    // Staff UID-to-Record Verification Binding
+    match /staff_roles/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isValidId(userId) && isOwner(userId) &&
+        isValidStaffRoleBinding(incoming()) &&
+        incoming().uid == userId &&
+        incoming().email == request.auth.token.email.lower() &&
+        incoming().createdAt == request.time &&
+        exists(/databases/$(database)/documents/staff/$(incoming().staffId)) &&
+        get(/databases/$(database)/documents/staff/$(incoming().staffId)).data.email.lower() == request.auth.token.email.lower() &&
+        get(/databases/$(database)/documents/staff/$(incoming().staffId)).data.role == incoming().role &&
+        get(/databases/$(database)/documents/staff/$(incoming().staffId)).data.active == true;
+      allow update: if isValidId(userId) && isAdmin() &&
+        isValidStaffRoleBinding(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt;
+      allow delete: if isValidId(userId) && (isOwner(userId) || isAdmin());
+    }
+
+    // Document Clearance Requests
+    match /requests/{requestId} {
+      allow get: if isValidId(requestId) && (
+        isStaff() ||
+        (isVerified() && existing().ownerUid == request.auth.uid)
+      );
+      allow list: if isStaff() || (isVerified() && resource.data.ownerUid == request.auth.uid);
+      allow create: if isValidId(requestId) && isVerified() &&
+        isValidRequest(incoming()) &&
+        incoming().requestId == requestId &&
+        incoming().ownerUid == request.auth.uid &&
+        incoming().status == 'pending' &&
+        incoming().release == '' &&
+        incoming().authCheck == '' &&
+        incoming().idVerified == false &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        existsAfter(/databases/$(database)/documents/requests_public/$(incoming().tracking));
+      allow update: if isValidId(requestId) && isStaff() &&
+        isValidRequest(incoming()) &&
+        incoming().requestId == existing().requestId &&
+        incoming().tracking == existing().tracking &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (
+            existing().status == 'pending' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['idVerified', 'complete', 'updatedAt'])
+          ) ||
+          (
+            existing().status == 'pending' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['authCheck', 'updatedAt'])
+          ) ||
+          (
+            existing().status == 'pending' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'reason', 'release', 'approvedAt', 'rejectedAt', 'updatedAt'])
+          ) ||
+          (
+            isFulfiller() &&
+            existing().status == 'approved' &&
+            existing().release != 'claimed' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['release', 'readyAt', 'claimedAt', 'claimedBy', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(requestId) && isAdmin();
+    }
+
+    // Public Non-PII Tracking Status Projection
+    match /requests_public/{tracking} {
+      allow get: if isValidTracking(tracking);
+      allow list: if false;
+      allow create: if isValidTracking(tracking) && isVerified() &&
+        isValidPublicTracking(incoming()) &&
+        incoming().tracking == tracking &&
+        incoming().ownerUid == request.auth.uid &&
+        incoming().status == 'pending' &&
+        incoming().release == '' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidTracking(tracking) && isStaff() &&
+        isValidPublicTracking(incoming()) &&
+        incoming().tracking == existing().tracking &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (isAdmin() || (existing().status != 'rejected' && existing().release != 'claimed'));
+      allow delete: if isValidTracking(tracking) && isAdmin();
+    }
+
+    // Staff Notifications
+    match /notifications/{notificationId} {
+      allow get: if isValidId(notificationId) && isStaff() && (
+        isAdmin() || existing().recipientEmail.lower() == request.auth.token.email.lower()
+      );
+      allow list: if isVerified() && (
+        isAdmin() || resource.data.recipientEmail == request.auth.token.email.lower()
+      );
+      allow create: if isValidId(notificationId) && isVerified() &&
+        isValidNotification(incoming()) &&
+        incoming().notificationId == notificationId &&
+        incoming().read == false &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(notificationId) && isStaff() &&
+        (isAdmin() || existing().recipientEmail.lower() == request.auth.token.email.lower()) &&
+        isValidNotification(incoming()) &&
+        incoming().notificationId == existing().notificationId &&
+        incoming().recipientEmail == existing().recipientEmail &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['read', 'updatedAt']);
+      allow delete: if isValidId(notificationId) && isAdmin();
+    }
+  }
+}

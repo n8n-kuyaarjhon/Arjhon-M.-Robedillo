@@ -1,0 +1,6 @@
+{
+  "name": "Cabiao SHS Student Clearance System",
+  "description": "Request school records from the Office of the Registrar, Cabiao Senior High School, track requests online, and manage learner and staff records.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
