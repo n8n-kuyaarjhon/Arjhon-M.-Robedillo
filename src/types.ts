@@ -274,34 +274,139 @@ export function purposeDisplay(req: Pick<ClearanceRequest, 'purpose' | 'purposeO
   return PURPOSE[req.purpose];
 }
 
-export async function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = String(reader.result || '');
-      const comma = result.indexOf(',');
-      resolve(comma >= 0 ? result.slice(comma + 1) : result);
-    };
-    reader.onerror = () => reject(new Error('Could not read the selected file.'));
-    reader.readAsDataURL(file);
-  });
+export const FILE_SIZE_LIMITS = {
+  imageOrPdfMaxBytes: 15 * 1024 * 1024, // 15 MB
+  videoMaxBytes: 50 * 1024 * 1024, // 50 MB
+} as const;
+
+export function isImageFile(file: File): boolean {
+  if (file.type && file.type.toLowerCase().startsWith('image/')) return true;
+  return /\.(jpe?g|png|webp|gif|bmp|heic|heif)$/i.test(file.name || '');
 }
 
-export async function uploadAttachment(file: File, kind: 'id' | 'proof' | 'photo'): Promise<{ url: string; mime: string }> {
-  const dataBase64 = await fileToBase64(file);
-  const res = await fetch('/api/uploads', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      kind,
-      filename: file.name,
-      mime: file.type || 'application/octet-stream',
-      dataBase64,
-    }),
-  });
-  const body = (await res.json().catch(() => ({}))) as { url?: string; mime?: string; error?: string };
-  if (!res.ok || !body.url) {
-    throw new Error(body.error || 'Could not upload the file.');
+export function isVideoFile(file: File): boolean {
+  if (file.type && file.type.toLowerCase().startsWith('video/')) return true;
+  return /\.(mp4|mov|webm|m4v|3gp|avi|mkv)$/i.test(file.name || '');
+}
+
+export function isPdfFile(file: File): boolean {
+  if (file.type && file.type.toLowerCase() === 'application/pdf') return true;
+  return /\.pdf$/i.test(file.name || '');
+}
+
+export function inferFileMime(file: File): string {
+  if (file.type && file.type !== 'application/octet-stream') {
+    return file.type.toLowerCase().split(';')[0].trim();
   }
-  return { url: body.url, mime: body.mime || file.type };
+  const lower = (file.name || '').toLowerCase();
+  if (lower.endsWith('.pdf')) return 'application/pdf';
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  if (lower.endsWith('.gif')) return 'image/gif';
+  if (lower.endsWith('.mp4') || lower.endsWith('.m4v')) return 'video/mp4';
+  if (lower.endsWith('.mov')) return 'video/quicktime';
+  if (lower.endsWith('.webm')) return 'video/webm';
+  if (isVideoFile(file)) return 'video/mp4';
+  if (isImageFile(file)) return 'image/jpeg';
+  return 'application/octet-stream';
+}
+
+export function validateAttachmentFile(
+  file: File,
+  kind: 'id' | 'proof' | 'photo',
+): string | null {
+  if (!file || file.size === 0) {
+    return 'Selected file is empty.';
+  }
+  const isImage = isImageFile(file);
+  const isVideo = isVideoFile(file);
+  const isPdf = isPdfFile(file);
+
+  if (kind === 'photo') {
+    if (!isImage) {
+      return 'The photo of the person claiming must be an image file.';
+    }
+    if (file.size > FILE_SIZE_LIMITS.imageOrPdfMaxBytes) {
+      return 'Photo must be 15 MB or smaller.';
+    }
+    return null;
+  }
+
+  if (!isImage && !isVideo && !isPdf) {
+    return 'Upload an image, PDF, or video file only.';
+  }
+  if (isVideo && file.size > FILE_SIZE_LIMITS.videoMaxBytes) {
+    return 'Video files must be 50 MB or smaller.';
+  }
+  if ((isImage || isPdf) && file.size > FILE_SIZE_LIMITS.imageOrPdfMaxBytes) {
+    return 'Images and PDFs must be 15 MB or smaller.';
+  }
+  return null;
+}
+
+export async function prepareMediaForUpload(
+  file: File,
+): Promise<{ blob: Blob; filename: string; mime: string }> {
+  const mime = inferFileMime(file);
+  if (!isImageFile(file)) {
+    return {
+      blob: file,
+      filename: file.name || 'upload',
+      mime,
+    };
+  }
+
+  // Re-encode oversized images (> 700 KB) or HEIC/HEIF photos to fast, universally viewable JPEGs
+  const needsResize =
+    file.size > 700 * 1024 ||
+    !file.type ||
+    file.type === 'image/heic' ||
+    file.type === 'image/heif';
+  if (!needsResize) {
+    return {
+      blob: file,
+      filename: file.name || 'image.jpg',
+      mime,
+    };
+  }
+
+  try {
+    const objectUrl = URL.createObjectURL(file);
+    try {
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const el = new Image();
+        el.onload = () => resolve(el);
+        el.onerror = () => reject(new Error('Unsupported image format'));
+        el.src = objectUrl;
+      });
+      const maxDim = 1600;
+      const scale = Math.min(1, maxDim / Math.max(img.width || 1, img.height || 1));
+      const w = Math.max(1, Math.round((img.width || 800) * scale));
+      const h = Math.max(1, Math.round((img.height || 800) * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('Canvas unavailable');
+      ctx.drawImage(img, 0, 0, w, h);
+      const blob = await new Promise<Blob | null>((resolve) =>
+        canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.82),
+      );
+      if (!blob) throw new Error('Failed to encode JPEG');
+      const cleanBaseName = (file.name || 'upload').replace(/\.[^.]+$/, '');
+      return {
+        blob,
+        filename: `${cleanBaseName}.jpg`,
+        mime: 'image/jpeg',
+      };
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  } catch {
+    return {
+      blob: file,
+      filename: file.name || 'upload',
+      mime,
+    };
+  }
 }

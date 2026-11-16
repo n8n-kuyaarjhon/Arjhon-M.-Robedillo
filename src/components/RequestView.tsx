@@ -8,6 +8,7 @@ import {
   saveUserPrivateInfo,
   signInWithGoogle,
   submitClearanceRequest,
+  uploadMediaToStorage,
   type ResolvedSession,
 } from '../lib/firebase';
 import {
@@ -15,8 +16,9 @@ import {
   ID_TYPES,
   PROOF_LABEL,
   fullStudentName,
+  isImageFile,
   normPhone,
-  uploadAttachment,
+  validateAttachmentFile,
   type ClearanceRequest,
   type DocType,
   type PurposeType,
@@ -84,8 +86,96 @@ export function RequestView({
 
   const [verifying, setVerifying] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<{ label: string; percent: number } | null>(null);
   const [submitMsg, setSubmitMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [submittedRequest, setSubmittedRequest] = useState<ClearanceRequest | null>(null);
+
+  // Restore draft text inputs on mount (helps if mobile redirect login reloads the page)
+  useEffect(() => {
+    try {
+      const raw = window.sessionStorage.getItem('cshs_request_draft');
+      if (!raw) return;
+      const d = JSON.parse(raw) as Record<string, string>;
+      if (d.lrnInput) setLrnInput(d.lrnInput);
+      if (d.mFirst) { setMFirst(d.mFirst); setManualOpen(true); }
+      if (d.mMiddle) setMMiddle(d.mMiddle);
+      if (d.mLast) { setMLast(d.mLast); setManualOpen(true); }
+      if (d.mStrand) setMStrand(d.mStrand);
+      if (d.mSection) setMSection(d.mSection);
+      if (d.mYear) setMYear(d.mYear);
+      if (d.docType && d.docType in DOCS) setDocType(d.docType as DocType);
+      if (d.phone) setPhone(d.phone);
+      if (d.purpose) setPurpose(d.purpose as PurposeType);
+      if (d.purposeOther) setPurposeOther(d.purposeOther);
+      if (d.employment === 'local' || d.employment === 'abroad') setEmployment(d.employment);
+      if (d.idType) setIdType(d.idType);
+      if (d.university) setUniversity(d.university);
+      if (d.claimerType === 'self' || d.claimerType === 'rep') setClaimerType(d.claimerType);
+      if (d.repName) setRepName(d.repName);
+      if (d.relationship) setRelationship(d.relationship);
+      if (d.repReason) setRepReason(d.repReason);
+      if (d.repIdType) setRepIdType(d.repIdType);
+      if (d.repPhone) setRepPhone(d.repPhone);
+      if (d.signedName) setSignedName(d.signedName);
+    } catch {
+      // Ignore draft restore failure
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem(
+        'cshs_request_draft',
+        JSON.stringify({
+          lrnInput,
+          mFirst,
+          mMiddle,
+          mLast,
+          mStrand,
+          mSection,
+          mYear,
+          docType,
+          phone,
+          purpose,
+          purposeOther,
+          employment,
+          idType,
+          university,
+          claimerType,
+          repName,
+          relationship,
+          repReason,
+          repIdType,
+          repPhone,
+          signedName,
+        }),
+      );
+    } catch {
+      // Ignore storage restriction
+    }
+  }, [
+    lrnInput,
+    mFirst,
+    mMiddle,
+    mLast,
+    mStrand,
+    mSection,
+    mYear,
+    docType,
+    phone,
+    purpose,
+    purposeOther,
+    employment,
+    idType,
+    university,
+    claimerType,
+    repName,
+    relationship,
+    repReason,
+    repIdType,
+    repPhone,
+    signedName,
+  ]);
 
   // Auto-fill empty fields from saved private info or linked student record when signed in
   useEffect(() => {
@@ -95,7 +185,9 @@ export function RequestView({
     Promise.all([getUserPrivateInfo(uid), findMyLinkedStudent(userEmail)])
       .then(([priv, linked]) => {
         if (!active) return;
-        const hasManualEntry = Boolean(mFirst.trim() || mLast.trim());
+        const hasManualEntry = Boolean(
+          mFirst.trim() || mLast.trim() || fnFirst.trim() || fnLast.trim(),
+        );
         if (linked.length > 0 && !foundStudent && !hasManualEntry) {
           const s = linked[0];
           setFoundStudent(s);
@@ -204,131 +296,145 @@ export function RequestView({
     e.preventDefault();
     setSubmitMsg(null);
 
+    const failValidation = (text: string) => {
+      setSubmitMsg({ text, ok: false });
+      onToast(text, '', 'error');
+    };
+
     if (!uid || !userEmail) {
-      setSubmitMsg({
-        text: 'Verify your Gmail with Google first before submitting your request.',
-        ok: false,
-      });
+      failValidation('Sign in with Google first (click "One-time sign in with Google") before submitting.');
       return;
     }
 
     const cleanLrn = (foundStudent ? foundStudent.lrn : lrnInput).trim();
     if (cleanLrn && !/^\d{12}$/.test(cleanLrn)) {
-      setSubmitMsg({ text: 'The LRN must be 12 digits.', ok: false });
+      failValidation('The LRN must be 12 digits.');
       return;
     }
 
-    const first = foundStudent ? foundStudent.firstName : mFirst.trim();
-    const last = foundStudent ? foundStudent.lastName : mLast.trim();
-    if (!first || !last) {
+    // Automatically fall back to "I forgot my LRN" fields if the user didn't click "Use these details"
+    const resolvedFirst = foundStudent ? foundStudent.firstName : mFirst.trim() || fnFirst.trim();
+    const resolvedMiddle = foundStudent ? foundStudent.middleName || '' : mMiddle.trim() || fnMiddle.trim();
+    const resolvedLast = foundStudent ? foundStudent.lastName : mLast.trim() || fnLast.trim();
+    const resolvedStrand = foundStudent ? foundStudent.strand || '' : mStrand || fnStrand;
+    const resolvedYear = foundStudent ? foundStudent.yearGraduated || '' : mYear.trim() || fnYear.trim();
+
+    if (!foundStudent && (resolvedFirst !== mFirst.trim() || resolvedLast !== mLast.trim())) {
+      setMFirst(resolvedFirst);
+      setMMiddle(resolvedMiddle);
+      setMLast(resolvedLast);
+      setMStrand(resolvedStrand);
+      setMYear(resolvedYear);
+    }
+
+    if (!resolvedFirst || !resolvedLast) {
       setManualOpen(true);
-      setSubmitMsg({ text: 'Enter your first name and last name.', ok: false });
+      failValidation('Enter your first name and last name.');
       return;
     }
+
+    const computedName = foundStudent
+      ? fullStudentName(foundStudent)
+      : [resolvedFirst, resolvedMiddle, resolvedLast].filter(Boolean).join(' ');
 
     const phoneRaw = phone.trim();
     const normalizedPhone = phoneRaw ? normPhone(phoneRaw) : '';
     if (phoneRaw && !normalizedPhone) {
-      setSubmitMsg({
-        text: 'Enter a valid mobile number, like 0917 123 4567, or leave it blank.',
-        ok: false,
-      });
+      failValidation('Enter a valid mobile number, like 0917 123 4567, or leave it blank.');
       return;
     }
 
     if (!purpose) {
-      setSubmitMsg({ text: 'Choose the purpose of your request.', ok: false });
+      failValidation('Choose the purpose of your request.');
       return;
     }
     if (purpose === 'others' && !purposeOther.trim()) {
-      setSubmitMsg({ text: 'Please specify the purpose.', ok: false });
+      failValidation('Please specify the purpose.');
       return;
     }
     if (purpose === 'employment' && !['local', 'abroad'].includes(employment)) {
-      setSubmitMsg({ text: 'Choose whether the employment is local or abroad.', ok: false });
+      failValidation('Choose whether the employment is local or abroad.');
       return;
     }
     if (purpose === 'employment' && !idType) {
-      setSubmitMsg({ text: 'Choose the type of government ID.', ok: false });
+      failValidation('Choose the type of government ID.');
       return;
     }
     if (purpose === 'employment' && !idFile) {
-      setSubmitMsg({ text: 'Upload your government ID as your evidence for employment.', ok: false });
+      failValidation('Upload your government ID as your evidence for employment.');
       return;
     }
     if (purpose === 'university' && !university.trim()) {
-      setSubmitMsg({
-        text: 'Enter the name of the university or school requesting your documents.',
-        ok: false,
-      });
+      failValidation('Enter the name of the university or school requesting your documents.');
       return;
     }
     if ((purpose === 'university' || purpose === 'military') && !proofFile) {
-      setSubmitMsg({ text: `Upload the proof of request. ${PROOF_LABEL[purpose]}.`, ok: false });
+      failValidation(`Upload the proof of request. ${PROOF_LABEL[purpose]}.`);
       return;
     }
 
     if (claimerType === 'rep') {
       if (!repName.trim() || !relationship.trim() || !repIdType.trim()) {
-        setSubmitMsg({
-          text: 'Fill in the authorization letter: name, relationship, and ID of the person claiming.',
-          ok: false,
-        });
+        failValidation(
+          'Fill in the authorization letter: name, relationship, and ID of the person claiming.',
+        );
         return;
       }
       if (repPhone.trim() && !normPhone(repPhone.trim())) {
-        setSubmitMsg({
-          text: 'Enter a valid mobile number for the representative, or leave it blank.',
-          ok: false,
-        });
+        failValidation('Enter a valid mobile number for the representative, or leave it blank.');
         return;
       }
       if (!signedName.trim()) {
-        setSubmitMsg({ text: 'Type your full name as your signature on the letter.', ok: false });
+        failValidation('Type your full name as your signature on the letter.');
         return;
       }
       if (!auConfirm) {
-        setSubmitMsg({
-          text: 'Tick the box to confirm that you authorize this person.',
-          ok: false,
-        });
+        failValidation('Tick the box to confirm that you authorize this person.');
         return;
       }
-      if (!photoFile || !photoFile.type.startsWith('image/')) {
-        setSubmitMsg({
-          text: 'Upload a clear image photo of the person who will claim the document.',
-          ok: false,
-        });
+      if (!photoFile || !isImageFile(photoFile)) {
+        failValidation('Upload a clear image photo of the person who will claim the document.');
         return;
       }
     }
 
     setSubmitting(true);
+    setUploadStatus(null);
     try {
       let idUpload: { url: string; mime: string } | undefined;
       let proofUpload: { url: string; mime: string } | undefined;
       let photoUpload: { url: string; mime: string } | undefined;
 
       if (purpose === 'employment' && idFile) {
-        idUpload = await uploadAttachment(idFile, 'id');
+        setUploadStatus({ label: 'Uploading government ID...', percent: 0 });
+        idUpload = await uploadMediaToStorage(idFile, uid, 'id', (percent) =>
+          setUploadStatus({ label: 'Uploading government ID...', percent }),
+        );
       }
       if (proofFile) {
-        proofUpload = await uploadAttachment(proofFile, 'proof');
+        setUploadStatus({ label: 'Uploading proof of request...', percent: 0 });
+        proofUpload = await uploadMediaToStorage(proofFile, uid, 'proof', (percent) =>
+          setUploadStatus({ label: 'Uploading proof of request...', percent }),
+        );
       }
       if (claimerType === 'rep' && photoFile) {
-        photoUpload = await uploadAttachment(photoFile, 'photo');
+        setUploadStatus({ label: 'Uploading representative photo...', percent: 0 });
+        photoUpload = await uploadMediaToStorage(photoFile, uid, 'photo', (percent) =>
+          setUploadStatus({ label: 'Uploading representative photo...', percent }),
+        );
       }
+      setUploadStatus(null);
 
       const sectionDisplay = foundStudent
         ? foundStudent.lastGradeLevel
           ? `Grade ${foundStudent.lastGradeLevel}${foundStudent.section ? ` - ${foundStudent.section}` : ''}`
           : foundStudent.section || ''
-        : [mStrand, mSection].filter(Boolean).join(' - ');
+        : [resolvedStrand, mSection.trim()].filter(Boolean).join(' - ');
 
       const created = await submitClearanceRequest({
         ownerUid: uid,
         doc: docType,
-        name: learnerFullName,
+        name: computedName,
         lrn: cleanLrn || undefined,
         section: sectionDisplay || undefined,
         phone: normalizedPhone || undefined,
@@ -355,17 +461,27 @@ export function RequestView({
       });
 
       if (saveProfileChecked) {
-        await saveUserPrivateInfo(uid, {
-          email: userEmail,
-          firstName: first,
-          middleName: foundStudent ? foundStudent.middleName : mMiddle.trim(),
-          lastName: last,
-          lrn: cleanLrn,
-          strand: foundStudent ? foundStudent.strand : mStrand,
-          section: foundStudent ? foundStudent.section : mSection,
-          yearGraduated: foundStudent ? foundStudent.yearGraduated : mYear.trim(),
-          phone: normalizedPhone || '',
-        });
+        try {
+          await saveUserPrivateInfo(uid, {
+            email: userEmail,
+            firstName: resolvedFirst,
+            middleName: resolvedMiddle,
+            lastName: resolvedLast,
+            lrn: cleanLrn,
+            strand: resolvedStrand,
+            section: foundStudent ? foundStudent.section : mSection.trim(),
+            yearGraduated: resolvedYear,
+            phone: normalizedPhone || '',
+          });
+        } catch (profileErr) {
+          console.warn('Could not sync user profile after request submit:', profileErr);
+        }
+      }
+
+      try {
+        window.sessionStorage.removeItem('cshs_request_draft');
+      } catch {
+        // Ignore storage error
       }
 
       setSubmittedRequest(created);
@@ -373,10 +489,33 @@ export function RequestView({
       onToast(`Request ${created.tracking} saved.`);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (err) {
-      setSubmitMsg({ text: extractReadableError(err), ok: false });
+      const msg = extractReadableError(err);
+      setSubmitMsg({ text: msg, ok: false });
+      onToast(msg, '', 'error');
     } finally {
+      setUploadStatus(null);
       setSubmitting(false);
     }
+  }
+
+  function handlePickFile(
+    file: File | null,
+    kind: 'id' | 'proof' | 'photo',
+    setter: (f: File | null) => void,
+    inputEl: HTMLInputElement,
+  ) {
+    if (!file) {
+      setter(null);
+      return;
+    }
+    const err = validateAttachmentFile(file, kind);
+    if (err) {
+      inputEl.value = '';
+      setter(null);
+      onToast(err, '', 'error');
+      return;
+    }
+    setter(file);
   }
 
   return (
@@ -827,13 +966,16 @@ export function RequestView({
                   ))}
                 </select>
                 <label htmlFor="valid-id" className="block text-sm font-medium mt-3 mb-1">
-                  Upload a photo or PDF of the ID
+                  Upload a photo, PDF, or video of the ID
                 </label>
+                <p className="text-xs text-ink/60 mb-1">
+                  Images/PDF up to 15 MB; videos up to 50 MB.
+                </p>
                 <input
                   id="valid-id"
                   type="file"
-                  accept="image/*,.pdf"
-                  onChange={(e) => setIdFile(e.target.files?.[0] || null)}
+                  accept="image/*,video/*,.pdf"
+                  onChange={(e) => handlePickFile(e.target.files?.[0] || null, 'id', setIdFile, e.currentTarget)}
                   className="w-full text-sm"
                 />
               </div>
@@ -862,13 +1004,13 @@ export function RequestView({
               {PROOF_LABEL[purpose]}
             </label>
             <p className="text-xs text-ink/60 mb-1">
-              Upload a photo or PDF. This is the evidence that the request came from them.
+              Upload a photo, PDF, or short video (images/PDF up to 15 MB; videos up to 50 MB).
             </p>
             <input
               id="proof-file"
               type="file"
-              accept="image/*,.pdf"
-              onChange={(e) => setProofFile(e.target.files?.[0] || null)}
+              accept="image/*,video/*,.pdf"
+              onChange={(e) => handlePickFile(e.target.files?.[0] || null, 'proof', setProofFile, e.currentTarget)}
               className="w-full text-sm"
             />
           </div>
@@ -1062,7 +1204,7 @@ export function RequestView({
                   id="au-photo"
                   type="file"
                   accept="image/*"
-                  onChange={(e) => setPhotoFile(e.target.files?.[0] || null)}
+                  onChange={(e) => handlePickFile(e.target.files?.[0] || null, 'photo', setPhotoFile, e.currentTarget)}
                   className="w-full text-sm"
                 />
                 {photoPreviewUrl && (
@@ -1105,14 +1247,43 @@ export function RequestView({
           </label>
         )}
 
+        {uploadStatus && (
+          <div className="space-y-1.5" role="status" aria-live="polite">
+            <div className="flex items-center justify-between text-xs text-ink/75">
+              <span>{uploadStatus.label}</span>
+              <span className="tabular-nums font-medium">{uploadStatus.percent}%</span>
+            </div>
+            <div className="h-2 w-full rounded bg-ink/10 overflow-hidden">
+              <div
+                className="h-full bg-brand transition-[width] duration-150"
+                style={{ width: `${uploadStatus.percent}%` }}
+              />
+            </div>
+          </div>
+        )}
+
         <div className="flex flex-wrap items-center gap-3">
           <button
             type="submit"
             disabled={submitting}
             className="bg-brand text-white px-5 py-2 rounded font-medium disabled:opacity-60 whitespace-nowrap"
           >
-            {submitting ? 'Submitting...' : 'Submit request'}
+            {submitting
+              ? uploadStatus
+                ? `Uploading (${uploadStatus.percent}%)...`
+                : 'Submitting...'
+              : 'Submit request'}
           </button>
+          {(!uid || !userEmail) && (
+            <button
+              type="button"
+              disabled={verifying}
+              onClick={handleGoogleVerify}
+              className="border border-brand text-brand px-4 py-2 rounded text-sm font-medium hover:bg-paper disabled:opacity-60 whitespace-nowrap"
+            >
+              {verifying ? 'Signing in...' : 'Sign in with Google first'}
+            </button>
+          )}
           {submitMsg && (
             <p role="status" className={`text-sm ${submitMsg.ok ? 'text-ok' : 'text-bad'}`}>
               {submitMsg.text}

@@ -190,11 +190,11 @@ service cloud.firestore {
         (!('repReason' in data) || (data.repReason is string && data.repReason.size() <= 200)) &&
         (!('signedName' in data) || (data.signedName is string && data.signedName.size() <= 120)) &&
         (!('signedAt' in data) || (data.signedAt is string && data.signedAt.size() <= 40)) &&
-        (!('idFileUrl' in data) || (data.idFileUrl is string && data.idFileUrl.size() <= 300)) &&
+        (!('idFileUrl' in data) || (data.idFileUrl is string && data.idFileUrl.size() <= 1000)) &&
         (!('idFileMime' in data) || (data.idFileMime is string && data.idFileMime.size() <= 80)) &&
-        (!('proofFileUrl' in data) || (data.proofFileUrl is string && data.proofFileUrl.size() <= 300)) &&
+        (!('proofFileUrl' in data) || (data.proofFileUrl is string && data.proofFileUrl.size() <= 1000)) &&
         (!('proofFileMime' in data) || (data.proofFileMime is string && data.proofFileMime.size() <= 80)) &&
-        (!('photoFileUrl' in data) || (data.photoFileUrl is string && data.photoFileUrl.size() <= 300)) &&
+        (!('photoFileUrl' in data) || (data.photoFileUrl is string && data.photoFileUrl.size() <= 1000)) &&
         (!('reason' in data) || (data.reason is string && data.reason.size() <= 300)) &&
         (!('claimedBy' in data) || (data.claimedBy is string && data.claimedBy.size() <= 160)) &&
         (!('approvedAt' in data) || (data.approvedAt is string && data.approvedAt.size() <= 40)) &&

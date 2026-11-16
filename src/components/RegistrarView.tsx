@@ -45,6 +45,27 @@ function FilePreview({ url, mime, label }: { url?: string; mime?: string; label:
       </div>
     );
   }
+  if (mime?.startsWith('video/')) {
+    return (
+      <div className="space-y-2">
+        <video
+          controls
+          playsInline
+          preload="metadata"
+          src={url}
+          className="max-h-72 max-w-full mx-auto rounded bg-black"
+        />
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-block text-xs underline text-brand"
+        >
+          Open {label} in new tab
+        </a>
+      </div>
+    );
+  }
   return (
     <img
       src={url}
