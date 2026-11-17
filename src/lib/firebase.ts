@@ -32,15 +32,12 @@ import {
   where,
   writeBatch,
 } from 'firebase/firestore';
-import { getDownloadURL, getStorage, ref, uploadBytesResumable } from 'firebase/storage';
 import firebaseConfig from '../../firebase-applet-config.json';
 import {
   BOOTSTRAPPED_ADMIN_EMAIL,
   FIELD_LIMITS,
   generateId,
   generateTrackingCode,
-  prepareMediaForUpload,
-  validateAttachmentFile,
   type ClearanceRequest,
   type PublicTrackingStatus,
   type StaffMember,
@@ -52,7 +49,6 @@ import {
 
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
-export const storage = getStorage(app);
 
 let authInstance: Auth;
 try {
@@ -232,95 +228,6 @@ export async function signInWithGoogle(rememberDevice = true): Promise<User> {
 
 export async function signOutUser(): Promise<void> {
   await signOut(auth);
-}
-
-// ---------------------------------------------------------------------------
-// Firebase Cloud Storage Direct Uploads
-// ---------------------------------------------------------------------------
-export async function uploadMediaToStorage(
-  file: File,
-  uid: string,
-  kind: 'id' | 'proof' | 'photo',
-  onProgress?: (percent: number) => void,
-): Promise<{ url: string; mime: string }> {
-  if (!uid || !auth.currentUser || auth.currentUser.uid !== uid) {
-    throw new Error('Sign in with Google before uploading files.');
-  }
-
-  const validationError = validateAttachmentFile(file, kind);
-  if (validationError) {
-    throw new Error(validationError);
-  }
-
-  const prepared = await prepareMediaForUpload(file);
-  const safeName = (prepared.filename || 'upload')
-    .replace(/[^a-zA-Z0-9._-]/g, '_')
-    .slice(-100);
-  const storagePath = `requests/${uid}/${kind}/${Date.now()}_${safeName}`;
-  const storageRef = ref(storage, storagePath);
-
-  return new Promise<{ url: string; mime: string }>((resolve, reject) => {
-    const task = uploadBytesResumable(storageRef, prepared.blob, {
-      contentType: prepared.mime,
-    });
-
-    task.on(
-      'state_changed',
-      (snapshot) => {
-        if (snapshot.totalBytes > 0) {
-          const pct = Math.min(
-            100,
-            Math.max(0, Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100)),
-          );
-          onProgress?.(pct);
-        }
-      },
-      (error) => {
-        const code = (error as { code?: string }).code || '';
-        const msg = error instanceof Error ? error.message : String(error || '');
-        if (code === 'storage/unauthorized') {
-          reject(
-            new Error(
-              'Permission denied by Firebase Storage rules. Make sure Firebase Storage is enabled and storage.rules are published.',
-            ),
-          );
-          return;
-        }
-        if (code === 'storage/canceled') {
-          reject(new Error('File upload was canceled.'));
-          return;
-        }
-        if (code === 'storage/quota-exceeded') {
-          reject(new Error('Firebase Storage quota exceeded.'));
-          return;
-        }
-        if (
-          code === 'storage/retry-limit-exceeded' ||
-          msg.toLowerCase().includes('cors') ||
-          msg.toLowerCase().includes('network')
-        ) {
-          reject(
-            new Error(
-              'Upload could not reach Firebase Cloud Storage. Check your internet connection, ensure Storage is enabled, and apply cors.json on your bucket.',
-            ),
-          );
-          return;
-        }
-        reject(new Error(msg || 'Could not upload file to Firebase Storage.'));
-      },
-      async () => {
-        try {
-          onProgress?.(100);
-          const url = await getDownloadURL(task.snapshot.ref);
-          resolve({ url, mime: prepared.mime });
-        } catch (err) {
-          reject(
-            err instanceof Error ? err : new Error('Uploaded file, but could not get download URL.'),
-          );
-        }
-      },
-    );
-  });
 }
 
 function cleanStr(val: string | undefined, max: number): string | undefined {
@@ -952,6 +859,77 @@ export async function decideClearanceRequest(
     await batch.commit();
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, `requests/${requestId}`);
+  }
+}
+
+export async function bulkUpdateRequestsStatus(
+  items: Array<{ requestId: string; tracking: string; release?: ClearanceRequest['release'] }>,
+  nextStatus: 'pending' | 'approved' | 'rejected',
+  reason?: string,
+): Promise<void> {
+  if (items.length === 0) return;
+  const nowStr = new Date().toISOString();
+  const cleanReason = nextStatus === 'rejected' ? cleanStr(reason, FIELD_LIMITS.reasonMax) || '' : '';
+
+  // Each item writes to 2 documents (requests + requests_public); stay well below Firestore's 500-op batch limit
+  const CHUNK_SIZE = 200;
+  for (let i = 0; i < items.length; i += CHUNK_SIZE) {
+    const chunk = items.slice(i, i + CHUNK_SIZE);
+    const batch = writeBatch(db);
+    for (const item of chunk) {
+      if (nextStatus === 'approved') {
+        const nextRelease =
+          item.release === 'ready' || item.release === 'claimed' ? item.release : 'preparing';
+        batch.update(doc(db, 'requests', item.requestId), {
+          status: 'approved',
+          release: nextRelease,
+          reason: '',
+          approvedAt: nowStr,
+          updatedAt: serverTimestamp(),
+        });
+        batch.update(doc(db, 'requests_public', item.tracking), {
+          status: 'approved',
+          release: nextRelease,
+          reason: '',
+          approvedAt: nowStr,
+          updatedAt: serverTimestamp(),
+        });
+      } else if (nextStatus === 'rejected') {
+        batch.update(doc(db, 'requests', item.requestId), {
+          status: 'rejected',
+          release: '',
+          reason: cleanReason,
+          rejectedAt: nowStr,
+          updatedAt: serverTimestamp(),
+        });
+        batch.update(doc(db, 'requests_public', item.tracking), {
+          status: 'rejected',
+          release: '',
+          reason: cleanReason,
+          rejectedAt: nowStr,
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        batch.update(doc(db, 'requests', item.requestId), {
+          status: 'pending',
+          release: '',
+          reason: '',
+          updatedAt: serverTimestamp(),
+        });
+        batch.update(doc(db, 'requests_public', item.tracking), {
+          status: 'pending',
+          release: '',
+          reason: '',
+          updatedAt: serverTimestamp(),
+        });
+      }
+    }
+
+    try {
+      await batch.commit();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, 'requests');
+    }
   }
 }
 

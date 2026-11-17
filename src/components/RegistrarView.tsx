@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
+  bulkUpdateRequestsStatus,
   decideClearanceRequest,
   extractReadableError,
   markRequestIdVerified,
@@ -80,15 +81,84 @@ export function RegistrarView({ requests, loading, onRefresh, onToast }: Registr
   const [filter, setFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
   const [viewingId, setViewingId] = useState<string | null>(null);
   const [approveAfterView, setApproveAfterView] = useState(false);
-  const [rejectingReq, setRejectingReq] = useState<ClearanceRequest | null>(null);
+  const [rejectingTargets, setRejectingTargets] = useState<ClearanceRequest[]>([]);
   const [reasonSelect, setReasonSelect] = useState(REJECT_REASONS[0]);
   const [reasonText, setReasonText] = useState('');
   const [modalErr, setModalErr] = useState('');
   const [busy, setBusy] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const selectAllRef = useRef<HTMLInputElement | null>(null);
 
   const viewingReq = requests.find((r) => r.requestId === viewingId) || null;
   const filtered =
     filter === 'all' ? requests : requests.filter((r) => r.status === filter);
+
+  const visibleIds = filtered.map((r) => r.requestId);
+  const selectedVisibleCount = visibleIds.filter((id) => selectedIds.has(id)).length;
+  const allVisibleSelected = visibleIds.length > 0 && selectedVisibleCount === visibleIds.length;
+  const someVisibleSelected = selectedVisibleCount > 0 && !allVisibleSelected;
+  const selectedRequests = requests.filter((r) => selectedIds.has(r.requestId));
+
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = someVisibleSelected;
+    }
+  }, [someVisibleSelected]);
+
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      if (prev.size === 0) return prev;
+      const existingIds = new Set(requests.map((r) => r.requestId));
+      let changed = false;
+      const next = new Set<string>();
+      for (const id of prev) {
+        if (existingIds.has(id)) next.add(id);
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [requests]);
+
+  function toggleSelectOne(requestId: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(requestId)) next.delete(requestId);
+      else next.add(requestId);
+      return next;
+    });
+  }
+
+  function toggleSelectAllVisible() {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allVisibleSelected) {
+        for (const id of visibleIds) next.delete(id);
+      } else {
+        for (const id of visibleIds) next.add(id);
+      }
+      return next;
+    });
+  }
+
+  async function handleBulkStatus(nextStatus: 'approved' | 'pending') {
+    if (selectedRequests.length === 0) return;
+    setBusy(true);
+    try {
+      await bulkUpdateRequestsStatus(selectedRequests, nextStatus);
+      const count = selectedRequests.length;
+      setSelectedIds(new Set());
+      onToast(
+        nextStatus === 'approved'
+          ? `${count} ${count === 1 ? 'request' : 'requests'} approved.`
+          : `${count} ${count === 1 ? 'request' : 'requests'} set to pending.`,
+      );
+      await onRefresh();
+    } catch (err) {
+      onToast(extractReadableError(err), '', 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function handleApprove(req: ClearanceRequest) {
     const isRep = req.claimerType === 'rep';
@@ -109,15 +179,17 @@ export function RegistrarView({ requests, loading, onRefresh, onToast }: Registr
     }
   }
 
-  function openReject(req: ClearanceRequest, defaultReason?: string) {
-    setRejectingReq(req);
+  function openReject(targets: ClearanceRequest | ClearanceRequest[], defaultReason?: string) {
+    const list = Array.isArray(targets) ? targets : [targets];
+    if (list.length === 0) return;
+    setRejectingTargets(list);
     setReasonSelect(defaultReason && REJECT_REASONS.includes(defaultReason) ? defaultReason : REJECT_REASONS[0]);
     setReasonText('');
     setModalErr('');
   }
 
   async function confirmReject() {
-    if (!rejectingReq) return;
+    if (rejectingTargets.length === 0) return;
     const reason = [reasonSelect, reasonText.trim()].filter(Boolean).join(' — ');
     if (!reason) {
       setModalErr('Give a reason so the student knows what to fix.');
@@ -125,9 +197,27 @@ export function RegistrarView({ requests, loading, onRefresh, onToast }: Registr
     }
     setBusy(true);
     try {
-      await decideClearanceRequest(rejectingReq.requestId, rejectingReq.tracking, 'rejected', reason);
-      setRejectingReq(null);
-      onToast('Request rejected.');
+      if (rejectingTargets.length === 1) {
+        const target = rejectingTargets[0];
+        await decideClearanceRequest(target.requestId, target.tracking, 'rejected', reason);
+        setSelectedIds((prev) => {
+          if (!prev.has(target.requestId)) return prev;
+          const next = new Set(prev);
+          next.delete(target.requestId);
+          return next;
+        });
+        onToast('Request rejected.');
+      } else {
+        await bulkUpdateRequestsStatus(rejectingTargets, 'rejected', reason);
+        const rejectedSet = new Set(rejectingTargets.map((r) => r.requestId));
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          for (const id of rejectedSet) next.delete(id);
+          return next;
+        });
+        onToast(`${rejectingTargets.length} requests rejected.`);
+      }
+      setRejectingTargets([]);
       await onRefresh();
     } catch (err) {
       onToast(extractReadableError(err), '', 'error');
@@ -213,10 +303,69 @@ export function RegistrarView({ requests, loading, onRefresh, onToast }: Registr
         </div>
       </div>
 
+      {selectedIds.size > 0 && (
+        <div
+          role="region"
+          aria-label="Bulk actions"
+          className="bg-white border border-brand/40 rounded-md p-3 mb-3 flex flex-wrap items-center justify-between gap-3"
+        >
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="text-sm font-medium tabular-nums">
+              {selectedIds.size} {selectedIds.size === 1 ? 'request' : 'requests'} selected
+            </span>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => setSelectedIds(new Set())}
+              className="text-xs underline text-ink/70 hover:text-ink disabled:opacity-60 whitespace-nowrap"
+            >
+              Clear selection
+            </button>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => handleBulkStatus('approved')}
+              className="px-3 py-1.5 rounded bg-ok text-white text-xs font-medium disabled:opacity-60 whitespace-nowrap"
+            >
+              Approve selected
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => openReject(selectedRequests)}
+              className="px-3 py-1.5 rounded border border-bad text-bad text-xs font-medium hover:bg-bad/5 disabled:opacity-60 whitespace-nowrap"
+            >
+              Reject selected
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => handleBulkStatus('pending')}
+              className="px-3 py-1.5 rounded border border-ink/30 text-ink text-xs font-medium hover:bg-paper disabled:opacity-60 whitespace-nowrap"
+            >
+              Set to pending
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="bg-white border border-ink/15 rounded-md overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="text-left border-b border-ink/15">
             <tr>
+              <th className="p-3 w-10">
+                <input
+                  ref={selectAllRef}
+                  type="checkbox"
+                  checked={allVisibleSelected}
+                  onChange={toggleSelectAllVisible}
+                  disabled={filtered.length === 0 || busy}
+                  aria-label="Select all visible requests"
+                  className="h-4 w-4 accent-brand cursor-pointer"
+                />
+              </th>
               <th className="p-3">Learner</th>
               <th className="p-3">Document</th>
               <th className="p-3">Purpose</th>
@@ -229,21 +378,35 @@ export function RegistrarView({ requests, loading, onRefresh, onToast }: Registr
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={7} className="p-4 text-ink/60">
+                <td colSpan={8} className="p-4 text-ink/60">
                   Loading requests...
                 </td>
               </tr>
             ) : filtered.length === 0 ? (
               <tr>
-                <td colSpan={7} className="p-4 text-ink/60">
+                <td colSpan={8} className="p-4 text-ink/60">
                   No document requests in this view.
                 </td>
               </tr>
             ) : (
               filtered.map((req) => {
                 const isRep = req.claimerType === 'rep';
+                const isSelected = selectedIds.has(req.requestId);
                 return (
-                  <tr key={req.requestId} className="border-b border-ink/10 align-top">
+                  <tr
+                    key={req.requestId}
+                    className={`border-b border-ink/10 align-top ${isSelected ? 'bg-paper/60' : ''}`}
+                  >
+                    <td className="p-3">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleSelectOne(req.requestId)}
+                        disabled={busy}
+                        aria-label={`Select request ${req.tracking} for ${req.name}`}
+                        className="h-4 w-4 accent-brand cursor-pointer mt-0.5"
+                      />
+                    </td>
                     <td className="p-3">
                       <div className="font-medium">{req.name}</div>
                       <div className="text-xs text-ink/60 tabular-nums">
@@ -393,8 +556,9 @@ export function RegistrarView({ requests, loading, onRefresh, onToast }: Registr
                 <div>
                   <p className="text-sm font-medium">Who will claim: {viewingReq.repName}</p>
                   <p className="text-xs text-ink/60">
-                    Authorization letter, filled up online by the learner. Check the signed printed
-                    copy and the IDs when the document is claimed.
+                    Authorization letter, filled up online by the learner. Check the uploaded
+                    purpose/ID file above for the representative&rsquo;s photo and valid ID, and
+                    verify the signed printed copy plus that exact physical ID when claimed.
                   </p>
                   {viewingReq.photoFileUrl && (
                     <div className="border border-ink/15 rounded bg-paper p-2 mt-2">
@@ -522,7 +686,7 @@ export function RegistrarView({ requests, loading, onRefresh, onToast }: Registr
       )}
 
       {/* Reject request modal */}
-      {rejectingReq && (
+      {rejectingTargets.length > 0 && (
         <div
           className="fixed inset-0 z-[60] bg-ink/60 grid place-items-center p-4"
           role="dialog"
@@ -530,9 +694,16 @@ export function RegistrarView({ requests, loading, onRefresh, onToast }: Registr
           aria-labelledby="reject-modal-title"
         >
           <div className="bg-white rounded-md p-6 w-full max-w-md">
-            <h2 id="reject-modal-title" className="font-serif text-xl mb-3">
-              Reject this request
+            <h2 id="reject-modal-title" className="font-serif text-xl mb-1">
+              {rejectingTargets.length === 1
+                ? 'Reject this request'
+                : `Reject ${rejectingTargets.length} selected requests`}
             </h2>
+            {rejectingTargets.length > 1 && (
+              <p className="text-xs text-ink/65 mb-3">
+                The reason below will be saved on all {rejectingTargets.length} selected requests.
+              </p>
+            )}
             <label htmlFor="reason-select" className="block text-sm font-medium mb-1">
               Reason for rejection
             </label>
@@ -567,7 +738,7 @@ export function RegistrarView({ requests, loading, onRefresh, onToast }: Registr
             <div className="flex justify-end gap-2 mt-4">
               <button
                 type="button"
-                onClick={() => setRejectingReq(null)}
+                onClick={() => setRejectingTargets([])}
                 className="px-4 py-2 rounded border border-ink/30 text-sm whitespace-nowrap"
               >
                 Cancel
@@ -578,7 +749,11 @@ export function RegistrarView({ requests, loading, onRefresh, onToast }: Registr
                 onClick={confirmReject}
                 className="px-4 py-2 rounded bg-bad text-white font-medium text-sm disabled:opacity-60 whitespace-nowrap"
               >
-                {busy ? 'Rejecting...' : 'Reject request'}
+                {busy
+                  ? 'Rejecting...'
+                  : rejectingTargets.length === 1
+                    ? 'Reject request'
+                    : `Reject ${rejectingTargets.length} requests`}
               </button>
             </div>
           </div>

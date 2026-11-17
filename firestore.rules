@@ -384,7 +384,7 @@ service cloud.firestore {
             incoming().diff(existing()).affectedKeys().hasOnly(['authCheck', 'updatedAt'])
           ) ||
           (
-            existing().status == 'pending' &&
+            existing().release != 'claimed' &&
             incoming().diff(existing()).affectedKeys().hasOnly(['status', 'reason', 'release', 'approvedAt', 'rejectedAt', 'updatedAt'])
           ) ||
           (
@@ -415,7 +415,7 @@ service cloud.firestore {
         incoming().ownerUid == existing().ownerUid &&
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time &&
-        (isAdmin() || (existing().status != 'rejected' && existing().release != 'claimed'));
+        (isAdmin() || existing().release != 'claimed');
       allow delete: if isValidTracking(tracking) && isAdmin();
     }
 

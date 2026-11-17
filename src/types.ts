@@ -275,8 +275,7 @@ export function purposeDisplay(req: Pick<ClearanceRequest, 'purpose' | 'purposeO
 }
 
 export const FILE_SIZE_LIMITS = {
-  imageOrPdfMaxBytes: 15 * 1024 * 1024, // 15 MB
-  videoMaxBytes: 50 * 1024 * 1024, // 50 MB
+  maxBytes: 5 * 1024 * 1024, // 5 MB strict maximum per uploaded picture or file
 } as const;
 
 export function isImageFile(file: File): boolean {
@@ -311,6 +310,14 @@ export function inferFileMime(file: File): string {
   return 'application/octet-stream';
 }
 
+export function formatFileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 KB';
+  if (bytes < 1024 * 1024) {
+    return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
 export function validateAttachmentFile(
   file: File,
   kind: 'id' | 'proof' | 'photo',
@@ -322,25 +329,17 @@ export function validateAttachmentFile(
   const isVideo = isVideoFile(file);
   const isPdf = isPdfFile(file);
 
-  if (kind === 'photo') {
-    if (!isImage) {
-      return 'The photo of the person claiming must be an image file.';
-    }
-    if (file.size > FILE_SIZE_LIMITS.imageOrPdfMaxBytes) {
-      return 'Photo must be 15 MB or smaller.';
-    }
-    return null;
+  if (kind === 'photo' && !isImage) {
+    return 'The photo of the person claiming must be an image file.';
   }
-
-  if (!isImage && !isVideo && !isPdf) {
+  if (kind !== 'photo' && !isImage && !isVideo && !isPdf) {
     return 'Upload an image, PDF, or video file only.';
   }
-  if (isVideo && file.size > FILE_SIZE_LIMITS.videoMaxBytes) {
-    return 'Video files must be 50 MB or smaller.';
+
+  if (file.size > FILE_SIZE_LIMITS.maxBytes) {
+    return `File too large (${formatFileSize(file.size)}). Maximum allowed is 5 MB only — hindi ito tatanggapin. Tip: I-send muna sa Messenger ang picture at i-save ulit para lumiit ang size.`;
   }
-  if ((isImage || isPdf) && file.size > FILE_SIZE_LIMITS.imageOrPdfMaxBytes) {
-    return 'Images and PDFs must be 15 MB or smaller.';
-  }
+
   return null;
 }
 
@@ -370,7 +369,7 @@ export async function prepareMediaForUpload(
     };
   }
 
-  try {
+  const encodeTask = (async (): Promise<{ blob: Blob; filename: string; mime: string }> => {
     const objectUrl = URL.createObjectURL(file);
     try {
       const img = await new Promise<HTMLImageElement>((resolve, reject) => {
@@ -402,6 +401,14 @@ export async function prepareMediaForUpload(
     } finally {
       URL.revokeObjectURL(objectUrl);
     }
+  })();
+
+  const timeoutFallback = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error('Image optimization timed out')), 5000),
+  );
+
+  try {
+    return await Promise.race([encodeTask, timeoutFallback]);
   } catch {
     return {
       blob: file,

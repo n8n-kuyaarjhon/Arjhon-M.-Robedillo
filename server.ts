@@ -28,6 +28,16 @@ async function startServer(): Promise<void> {
     });
   });
 
+  app.get('/api/upload-config', (_req: Request, res: Response) => {
+    const cloudName = String(
+      process.env.VITE_CLOUDINARY_CLOUD_NAME || process.env.CLOUDINARY_CLOUD_NAME || '',
+    ).trim();
+    const uploadPreset = String(
+      process.env.VITE_CLOUDINARY_UPLOAD_PRESET || process.env.CLOUDINARY_UPLOAD_PRESET || '',
+    ).trim();
+    res.json({ cloudName, uploadPreset });
+  });
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },

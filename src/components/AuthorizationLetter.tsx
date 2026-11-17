@@ -51,7 +51,8 @@ export function AuthorizationLetter({ request, showFullLrn = true }: Authorizati
           'their valid ID'
         )}
         {isRep && request.repPhone ? ` and can be reached at ${request.repPhone}` : ''}. A photocopy of
-        my valid ID is attached.
+        my valid ID is attached, and their photo with their valid ID is included in the uploaded
+        request file (they will bring that exact same ID when claiming).
       </p>
       <div className="mt-8 w-64">
         {isRep && request.signedName ? (
@@ -63,7 +64,7 @@ export function AuthorizationLetter({ request, showFullLrn = true }: Authorizati
       </div>
       <p className="text-xs text-ink/60 mt-4 font-sans">
         {isRep
-          ? 'Filled up online. Print it and sign it by hand before it is claimed.'
+          ? 'Filled up online. Print it and sign it by hand before it is claimed, and bring the exact ID included in the uploaded photo.'
           : 'Sample letter.'}
       </p>
     </div>

@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import {
   extractReadableError,
   findMyLinkedStudent,
@@ -8,15 +8,15 @@ import {
   saveUserPrivateInfo,
   signInWithGoogle,
   submitClearanceRequest,
-  uploadMediaToStorage,
   type ResolvedSession,
 } from '../lib/firebase';
+import { uploadMediaToCloudinary } from '../lib/cloudinary';
 import {
   DOCS,
   ID_TYPES,
   PROOF_LABEL,
+  formatFileSize,
   fullStudentName,
-  isImageFile,
   normPhone,
   validateAttachmentFile,
   type ClearanceRequest,
@@ -69,8 +69,10 @@ export function RequestView({
   const [employment, setEmployment] = useState<'local' | 'abroad' | ''>('');
   const [idType, setIdType] = useState('');
   const [idFile, setIdFile] = useState<File | null>(null);
+  const [idFileError, setIdFileError] = useState('');
   const [university, setUniversity] = useState('');
   const [proofFile, setProofFile] = useState<File | null>(null);
+  const [proofFileError, setProofFileError] = useState('');
 
   const [claimerType, setClaimerType] = useState<'self' | 'rep'>('self');
   const [repName, setRepName] = useState('');
@@ -80,13 +82,12 @@ export function RequestView({
   const [repPhone, setRepPhone] = useState('');
   const [signedName, setSignedName] = useState('');
   const [auConfirm, setAuConfirm] = useState(false);
-  const [photoFile, setPhotoFile] = useState<File | null>(null);
-  const [photoPreviewUrl, setPhotoPreviewUrl] = useState<string | null>(null);
   const [saveProfileChecked, setSaveProfileChecked] = useState(true);
 
   const [verifying, setVerifying] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<{ label: string; percent: number } | null>(null);
+  const uploadAbortRef = useRef<AbortController | null>(null);
   const [submitMsg, setSubmitMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [submittedRequest, setSubmittedRequest] = useState<ClearanceRequest | null>(null);
 
@@ -216,16 +217,6 @@ export function RequestView({
       active = false;
     };
   }, [uid, userEmail]);
-
-  useEffect(() => {
-    if (!photoFile) {
-      setPhotoPreviewUrl(null);
-      return;
-    }
-    const url = URL.createObjectURL(photoFile);
-    setPhotoPreviewUrl(url);
-    return () => URL.revokeObjectURL(url);
-  }, [photoFile]);
 
   async function handleLookupByLrn() {
     const clean = lrnInput.trim();
@@ -372,6 +363,12 @@ export function RequestView({
       failValidation(`Upload the proof of request. ${PROOF_LABEL[purpose]}.`);
       return;
     }
+    if (purpose === 'others' && claimerType === 'rep' && !proofFile) {
+      failValidation(
+        'Upload a file under Request purpose containing the picture of the person claiming along with their valid ID.',
+      );
+      return;
+    }
 
     if (claimerType === 'rep') {
       if (!repName.trim() || !relationship.trim() || !repIdType.trim()) {
@@ -392,35 +389,34 @@ export function RequestView({
         failValidation('Tick the box to confirm that you authorize this person.');
         return;
       }
-      if (!photoFile || !isImageFile(photoFile)) {
-        failValidation('Upload a clear image photo of the person who will claim the document.');
-        return;
-      }
     }
 
     setSubmitting(true);
     setUploadStatus(null);
+    const controller = new AbortController();
+    uploadAbortRef.current = controller;
     try {
       let idUpload: { url: string; mime: string } | undefined;
       let proofUpload: { url: string; mime: string } | undefined;
-      let photoUpload: { url: string; mime: string } | undefined;
 
       if (purpose === 'employment' && idFile) {
         setUploadStatus({ label: 'Uploading government ID...', percent: 0 });
-        idUpload = await uploadMediaToStorage(idFile, uid, 'id', (percent) =>
-          setUploadStatus({ label: 'Uploading government ID...', percent }),
+        idUpload = await uploadMediaToCloudinary(
+          idFile,
+          uid,
+          'id',
+          (percent) => setUploadStatus({ label: 'Uploading government ID...', percent }),
+          controller.signal,
         );
       }
       if (proofFile) {
-        setUploadStatus({ label: 'Uploading proof of request...', percent: 0 });
-        proofUpload = await uploadMediaToStorage(proofFile, uid, 'proof', (percent) =>
-          setUploadStatus({ label: 'Uploading proof of request...', percent }),
-        );
-      }
-      if (claimerType === 'rep' && photoFile) {
-        setUploadStatus({ label: 'Uploading representative photo...', percent: 0 });
-        photoUpload = await uploadMediaToStorage(photoFile, uid, 'photo', (percent) =>
-          setUploadStatus({ label: 'Uploading representative photo...', percent }),
+        setUploadStatus({ label: 'Uploading file...', percent: 0 });
+        proofUpload = await uploadMediaToCloudinary(
+          proofFile,
+          uid,
+          'proof',
+          (percent) => setUploadStatus({ label: 'Uploading file...', percent }),
+          controller.signal,
         );
       }
       setUploadStatus(null);
@@ -456,7 +452,6 @@ export function RequestView({
         idFileMime: idUpload?.mime,
         proofFileUrl: proofUpload?.url,
         proofFileMime: proofUpload?.mime,
-        photoFileUrl: photoUpload?.url,
         complete: Boolean(foundStudent),
       });
 
@@ -493,6 +488,7 @@ export function RequestView({
       setSubmitMsg({ text: msg, ok: false });
       onToast(msg, '', 'error');
     } finally {
+      uploadAbortRef.current = null;
       setUploadStatus(null);
       setSubmitting(false);
     }
@@ -502,9 +498,11 @@ export function RequestView({
     file: File | null,
     kind: 'id' | 'proof' | 'photo',
     setter: (f: File | null) => void,
+    errorSetter: (msg: string) => void,
     inputEl: HTMLInputElement,
   ) {
     if (!file) {
+      errorSetter('');
       setter(null);
       return;
     }
@@ -512,9 +510,11 @@ export function RequestView({
     if (err) {
       inputEl.value = '';
       setter(null);
+      errorSetter(err);
       onToast(err, '', 'error');
       return;
     }
+    errorSetter('');
     setter(file);
   }
 
@@ -966,18 +966,42 @@ export function RequestView({
                   ))}
                 </select>
                 <label htmlFor="valid-id" className="block text-sm font-medium mt-3 mb-1">
-                  Upload a photo, PDF, or video of the ID
+                  Upload a photo, PDF, or short video of the ID (Max 5 MB)
                 </label>
-                <p className="text-xs text-ink/60 mb-1">
-                  Images/PDF up to 15 MB; videos up to 50 MB.
-                </p>
-                <input
-                  id="valid-id"
-                  type="file"
-                  accept="image/*,video/*,.pdf"
-                  onChange={(e) => handlePickFile(e.target.files?.[0] || null, 'id', setIdFile, e.currentTarget)}
-                  className="w-full text-sm"
-                />
+                <div className="grid md:grid-cols-[1fr_270px] gap-3 items-start">
+                  <div>
+                    <p className="text-xs text-ink/60 mb-1.5">
+                      Maximum file size: <b>5 MB</b> only. Files over 5 MB will not be accepted.
+                    </p>
+                    <RepresentativeUploadReminder highlight={claimerType === 'rep'} />
+                    <input
+                      id="valid-id"
+                      type="file"
+                      accept="image/*,video/*,.pdf"
+                      onChange={(e) =>
+                        handlePickFile(
+                          e.target.files?.[0] || null,
+                          'id',
+                          setIdFile,
+                          setIdFileError,
+                          e.currentTarget,
+                        )
+                      }
+                      className="w-full text-sm"
+                    />
+                    {idFile && !idFileError && (
+                      <p className="text-xs text-ok mt-1 tabular-nums">
+                        Ready: {idFile.name} ({formatFileSize(idFile.size)})
+                      </p>
+                    )}
+                    {idFileError && (
+                      <p role="alert" className="text-xs text-bad mt-1">
+                        {idFileError}
+                      </p>
+                    )}
+                  </div>
+                  <FileSizeTipCard />
+                </div>
               </div>
             )}
           </div>
@@ -1001,18 +1025,45 @@ export function RequestView({
         {(purpose === 'university' || purpose === 'military' || purpose === 'others') && (
           <div>
             <label htmlFor="proof-file" className="block font-medium mb-1">
-              {PROOF_LABEL[purpose]}
+              {purpose === 'others' && claimerType === 'rep'
+                ? 'Upload file: Picture of the person claiming with their valid ID (required when someone else claims)'
+                : PROOF_LABEL[purpose]}
             </label>
-            <p className="text-xs text-ink/60 mb-1">
-              Upload a photo, PDF, or short video (images/PDF up to 15 MB; videos up to 50 MB).
-            </p>
-            <input
-              id="proof-file"
-              type="file"
-              accept="image/*,video/*,.pdf"
-              onChange={(e) => handlePickFile(e.target.files?.[0] || null, 'proof', setProofFile, e.currentTarget)}
-              className="w-full text-sm"
-            />
+            <div className="grid md:grid-cols-[1fr_270px] gap-3 items-start">
+              <div>
+                <p className="text-xs text-ink/60 mb-1.5">
+                  Upload a photo, PDF, or short video. Maximum size: <b>5 MB</b> only (files over 5 MB
+                  will not be accepted).
+                </p>
+                <RepresentativeUploadReminder highlight={claimerType === 'rep'} />
+                <input
+                  id="proof-file"
+                  type="file"
+                  accept="image/*,video/*,.pdf"
+                  onChange={(e) =>
+                    handlePickFile(
+                      e.target.files?.[0] || null,
+                      'proof',
+                      setProofFile,
+                      setProofFileError,
+                      e.currentTarget,
+                    )
+                  }
+                  className="w-full text-sm"
+                />
+                {proofFile && !proofFileError && (
+                  <p className="text-xs text-ok mt-1 tabular-nums">
+                    Ready: {proofFile.name} ({formatFileSize(proofFile.size)})
+                  </p>
+                )}
+                {proofFileError && (
+                  <p role="alert" className="text-xs text-bad mt-1">
+                    {proofFileError}
+                  </p>
+                )}
+              </div>
+              <FileSizeTipCard />
+            </div>
           </div>
         )}
 
@@ -1037,8 +1088,10 @@ export function RequestView({
                 photocopy of the learner&rsquo;s valid ID, and their own valid ID.
               </li>
               <li>
-                The person claiming must be the one in the photo you uploaded. The Registrar&rsquo;s
-                Office compares the photo with the person who comes.
+                <b>Paalala kung iba ang kukuha:</b> Isama sa picture/file na naka-upload sa{' '}
+                <b>Request purpose</b> ang picture ng kukuha kasama ang kanyang valid ID, at
+                siguraduhing dadalhin niya ang <b>eksaktong ID na naka-upload</b> kapag kukunin na
+                ang document sa Registrar&rsquo;s Office.
               </li>
             </ul>
           </div>
@@ -1190,30 +1243,17 @@ export function RequestView({
                   />
                   <span>I confirm that I am authorizing this person to claim my document.</span>
                 </label>
-              </div>
-
-              <div className="rounded border border-ink/20 p-4">
-                <label htmlFor="au-photo" className="block font-medium mb-1">
-                  Photo of the person who will claim the document
-                </label>
-                <p className="text-xs text-ink/60 mb-2">
-                  Upload a clear photo of their face. The Registrar compares it with the person who
-                  comes to claim the document.
-                </p>
-                <input
-                  id="au-photo"
-                  type="file"
-                  accept="image/*"
-                  onChange={(e) => handlePickFile(e.target.files?.[0] || null, 'photo', setPhotoFile, e.currentTarget)}
-                  className="w-full text-sm"
-                />
-                {photoPreviewUrl && (
-                  <img
-                    src={photoPreviewUrl}
-                    alt="Representative preview"
-                    className="mt-3 max-h-48 rounded border border-ink/15 object-contain"
-                  />
-                )}
+                <div className="mt-3 border border-wait/40 bg-paper/75 rounded p-3 text-xs text-ink/85">
+                  <p className="font-semibold text-ink mb-1">
+                    Paalala para sa Authorization (kapag iba ang kukuha)
+                  </p>
+                  <p className="leading-relaxed">
+                    Wala na pong hiwalay na photo upload dito — <b>isama na lang sa file na
+                    ina-upload sa Request purpose sa itaas</b> ang picture ng kukuha kasama ang
+                    kanyang valid ID. Siguraduhing <b>dadalhin niya ang eksaktong ID na naka-upload
+                    kasama sa picture</b> kapag kukunin na ang document sa Registrar&rsquo;s Office.
+                  </p>
+                </div>
               </div>
 
               <AuthorizationLetter
@@ -1274,6 +1314,15 @@ export function RequestView({
                 : 'Submitting...'
               : 'Submit request'}
           </button>
+          {submitting && uploadStatus && (
+            <button
+              type="button"
+              onClick={() => uploadAbortRef.current?.abort()}
+              className="border border-ink/30 px-3 py-2 rounded text-sm font-medium hover:bg-paper whitespace-nowrap"
+            >
+              Cancel upload
+            </button>
+          )}
           {(!uid || !userEmail) && (
             <button
               type="button"
@@ -1292,6 +1341,40 @@ export function RequestView({
         </div>
       </form>
     </section>
+  );
+}
+
+function RepresentativeUploadReminder({ highlight }: { highlight: boolean }) {
+  return (
+    <div
+      className={`rounded p-2.5 text-xs mb-2 border ${
+        highlight
+          ? 'border-brand/50 bg-paper text-ink'
+          : 'border-ink/15 bg-paper/60 text-ink/80'
+      }`}
+    >
+      <b>Paalala kung iba ang kukuha:</b> Isama sa picture/file na i-upload dito ang{' '}
+      <b>picture ng taong kukuha kasama ang kanyang valid ID</b>. Siguraduhing dadalhin niya ang{' '}
+      <b>eksaktong ID na iyon</b> kapag kukunin ang document.
+    </div>
+  );
+}
+
+function FileSizeTipCard() {
+  return (
+    <aside
+      aria-label="Tips para lumiit ang file size"
+      className="border border-wait/40 bg-paper/75 rounded p-3 text-xs text-ink/85 space-y-1"
+    >
+      <p className="font-semibold text-ink">
+        Tip: Lumampas sa 5 MB ang picture?
+      </p>
+      <p className="leading-relaxed">
+        Para lumiit ang file size, <b>i-send muna sa Messenger</b> ang picture (kahit sa sarili mo
+        o sa kakilala), tapos <b>i-Save</b> ulit ang sinend na photo sa cellphone mo at iyon ang
+        i-upload dito.
+      </p>
+    </aside>
   );
 }
 
